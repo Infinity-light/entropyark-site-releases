@@ -74,11 +74,13 @@ jobs:
           set -euo pipefail
           target=/opt/apps/entropyark-site/site
           staging=/opt/apps/entropyark-site/site.next
-          ssh -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" \
+          ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
+            -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" \
             "rm -rf '$staging' && mkdir -p '$staging'"
-          rsync -az --delete -e "ssh -p $SERVER_PORT" \
+          rsync -az --delete -e "ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 -p $SERVER_PORT" \
             dist/ "$SERVER_USER@$SERVER_HOST:$staging/"
-          ssh -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" \
+          ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
+            -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" \
             "rm -rf '${target}.previous'; if [ -d '$target' ]; then mv '$target' '${target}.previous'; fi; mv '$staging' '$target'"
 
       - name: Verify production files
