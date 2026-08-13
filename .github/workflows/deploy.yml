@@ -1,0 +1,103 @@
+name: Deploy Monorepo
+run-name: "${{ github.event_name == 'repository_dispatch' && format('deploy {0} [{1}]', github.event.client_payload.source_sha, github.event.client_payload.dispatch_id) || format('deploy {0} [manual]', inputs.ref) }}"
+
+on:
+  repository_dispatch:
+    types: [deploy]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Commit SHA to deploy'
+        required: true
+      repo:
+        description: 'Source repo (owner/name)'
+        required: true
+
+concurrency:
+  group: deploy-entropyark-site
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, Linux, X64]
+    permissions:
+      contents: read
+    timeout-minutes: 25
+
+    steps:
+      - name: Resolve inputs
+        id: inputs
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            echo "ref=${{ github.event.client_payload.ref }}" >> $GITHUB_OUTPUT
+            echo "repo=${{ github.event.client_payload.repo }}" >> $GITHUB_OUTPUT
+          else
+            echo "ref=${{ github.event.inputs.ref }}" >> $GITHUB_OUTPUT
+            echo "repo=${{ github.event.inputs.repo }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.inputs.outputs.repo }}
+          ref: ${{ steps.inputs.outputs.ref }}
+          token: ${{ secrets.GH_RELEASE_REPO_TOKEN }}
+
+      - name: Sync source to deploy dir
+        run: |
+          mkdir -p /opt/apps/entropyark-site
+          rsync -a --exclude='.git' --exclude='node_modules' --exclude='_work' \
+            ./ /opt/apps/entropyark-site/
+
+      - name: Build apps on host
+        run: |
+          cd /opt/apps/entropyark-site
+          pnpm install --frozen-lockfile
+
+          pnpm --filter server build
+
+
+
+      - name: Build and deploy
+        env:
+
+        run: |
+          set -e
+          cd /opt/apps/entropyark-site
+
+          echo "=== Writing .env ==="
+          : > .env
+          cat > .env << 'ENVEOF'
+          ENVEOF
+          sed -i 's/^ *//' .env
+
+          echo "=== Building images ==="
+          docker compose -f docker-compose.prod.yml build
+
+          echo "=== Starting containers ==="
+          docker compose -f docker-compose.prod.yml up -d --remove-orphans
+
+
+
+          echo "=== Cleanup ==="
+          docker image prune -f
+
+
+
+      - name: Health check
+        run: |
+          echo "Waiting for containers to start..."
+          sleep 10
+          for i in 1 2 3 4 5; do
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8110/ || true)
+            if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 400 ]; then
+              echo "Health check passed (HTTP $STATUS)"
+              exit 0
+            fi
+            echo "Attempt $i: HTTP $STATUS, retrying in 5s..."
+            sleep 5
+          done
+          echo "Health check failed after 5 attempts"
+          docker ps --filter name=entropyark-site
+          docker logs entropyark-site-server-1 --tail 30 2>/dev/null || true
+          exit 1
